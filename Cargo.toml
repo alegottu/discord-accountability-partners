@@ -7,5 +7,6 @@ edition = "2021"
 
 [dependencies]
 tokio = { version = "1.28.2", features = ["full"] }
-serenity = { default-features = false, features = ["client", "gateway", "model", "rustls_backend"], version = "0.11" }
+serenity = { version = "0.11", default-features = false, features = ["client", "gateway", "model", "rustls_backend"] }
+serde_json = { version = "1.0" }
 
