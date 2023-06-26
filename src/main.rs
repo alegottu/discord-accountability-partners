@@ -1,5 +1,5 @@
 use std::env;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::BufReader;
 use std::vec;
 use std::collections::HashMap;
@@ -12,20 +12,20 @@ use serenity::
     prelude::*,
     Client
 };
-use serde::Deserialize;
+use serde::{Serialize, Deserialize};
 
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 struct Task
 {
     pub message_id: u64, // The message to react to to gain points
     pub value: u8 // How many points the task is worth
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 struct User
 {
     pub id: u64,
-    pub points: u64 // Accumlated points for this user
+    pub points: u64 // Accumulated points for this user
 }
 
 // Message ID mapped to task value
@@ -34,15 +34,24 @@ let mut tasks: HashMap<u64, u8> = HashMap::new();
 let mut users: HashMap<u64, u64> = HashMap::new();
 // Must be global to used with interface for event handlers
 
+let const str& TASKS_FOLDER = "../../res/tasks";
+let const str& USERS_FOLDER = "../../res/users";
+
+let const u64 TASKS_CHANNEL = 1100541860172271697;
+
+let const str& ADD_TASK = "!add";
+let const str& RM_TASK = "!remove";
+let const str& BUY_ITEM = "!buy";
+
 fn load_tasks(path: const &str) -> Result<(), Box<Error>>
 {
-    let file = File::open(path)?; // ? = Forward error if unable to open file
-    let reader = BufReader::new(file) // Create read-only buffer
-    let _tasks: Vec<Task> = serde_json::from_reader(reader)?;
-
-    for task in _tasks.iter()
+    for task in fs::read_dir(path)?
     {
-        tasks.insert(task.message_id, task.value);
+        let _task = task?
+        let file = File::open(task)?; // Forward error if unable to open file
+        let reader = BufReader::new(file);
+        let task: Task = serde_json::from_reader(reader)?;
+        tasks.push(task);
     }
 
     Ok(());
@@ -50,20 +59,19 @@ fn load_tasks(path: const &str) -> Result<(), Box<Error>>
 
 fn load_users(path: const &str) -> Result<(), Box<Error>>
 {
-    let file = File::open(path)?; // ? = Forward error if unable to open file
-    let reader = BufReader::new(file) // Create read-only buffer
-    let _users: Vec<User> = serde_json::from_reader(reader)?;
-
-    for user in _users.iter()
+    for user in fs::read_dir(path)?
     {
-        users.insert(user.id, user.points);
+        let _user = user?
+        let file = File::open(user)?; // Forward error if unable to open file
+        let reader = BufReader::new(file);
+        let user: User = serde_json::from_reader(reader)?;
+        users.push(user);
     }
 
     Ok(());
 }
 
-// If the bot closes, write update json files
-fn quit(tasks_path: const &str, users_path: const &str)
+fn save_item()
 {
 
 }
@@ -91,7 +99,7 @@ impl EventHandler for Handler
 
     async fn reaction_add(&self, ctx: Context, reaction: Reaction)
     {
-        if reaction.channel_id == 1100541860172271697 // Channel for tasks
+        if reaction.channel_id == TASKS_CHANNEL
         {
             let points = users.entry(reaction.user_id).or_insert(0);
             *points += tasks.contains_key(reaction.message_id) ?
