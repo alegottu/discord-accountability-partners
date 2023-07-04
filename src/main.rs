@@ -1,9 +1,8 @@
 use std::env;
+use std::sync::{Arc, Mutex};
 use std::fs::{self, File};
-use std::io::BufReader;
-use std::vec;
+use std::io::{self, BufReader};
 use std::collections::HashMap;
-use std::error::Error;
 
 use serenity::
 {
@@ -28,55 +27,92 @@ struct User
     pub points: u64 // Accumulated points for this user
 }
 
-// Message ID mapped to task value
-let mut tasks: HashMap<u64, u8> = HashMap::new();
-// User ID mapped to accumulated points
-let mut users: HashMap<u64, u64> = HashMap::new();
-// Must be global to used with interface for event handlers
+const TASKS_FOLDER: &str = "../../res/tasks";
+const USERS_FOLDER: &str = "../../res/users";
 
-let const str& TASKS_FOLDER = "../../res/tasks";
-let const str& USERS_FOLDER = "../../res/users";
+const TASKS_CHANNEL: u64 = 1100541860172271697;
 
-let const u64 TASKS_CHANNEL = 1100541860172271697;
+const HELP: &str = "!help";
+const ADD_TASK: &str = "!add";
+//const BUY_ITEM: &str = "!buy";
 
-let const str& ADD_TASK = "!add";
-let const str& RM_TASK = "!remove";
-let const str& BUY_ITEM = "!buy";
+const HELP_MESSAGE: &str = "!add <task> adds a task";
 
-fn load_tasks(path: const &str) -> Result<(), Box<Error>>
+fn load_tasks(tasks: &mut HashMap<u64, u8>) -> io::Result<()>
 {
-    for task in fs::read_dir(path)?
+    for entry in fs::read_dir(TASKS_FOLDER)?
     {
-        let _task = task?
-        let file = File::open(task)?; // Forward error if unable to open file
+        let entry = entry?;
+        let file = File::open(entry.path())?; // Forward error if unable to open file
         let reader = BufReader::new(file);
         let task: Task = serde_json::from_reader(reader)?;
-        tasks.push(task);
+        tasks.insert(task.message_id, task.value);
     }
 
-    Ok(());
+    Ok(())
 }
 
-fn load_users(path: const &str) -> Result<(), Box<Error>>
+fn load_users(users: &mut HashMap<u64, u64>) -> io::Result<()>
 {
-    for user in fs::read_dir(path)?
+    for entry in fs::read_dir(USERS_FOLDER)?
     {
-        let _user = user?
-        let file = File::open(user)?; // Forward error if unable to open file
+        let entry = entry?;
+        let file = File::open(entry.path())?;
         let reader = BufReader::new(file);
         let user: User = serde_json::from_reader(reader)?;
-        users.push(user);
+        users.insert(user.id, user.points);
     }
 
-    Ok(());
+    Ok(())
 }
 
-fn save_item()
+// Functions to save JSON files
+fn save_task(task: Task, task_num: usize) -> io::Result<()>
 {
+    let text = serde_json::to_string(&task)?;
+    fs::write(TASKS_FOLDER.to_owned() + "/" + &task_num.to_string(), text)?;
 
+    Ok(())
 }
 
-struct Handler;
+fn save_user(user: User, user_num: usize) -> io::Result<()> 
+{
+    let text = serde_json::to_string(&user)?;
+    fs::write(USERS_FOLDER.to_owned() + "/" + &user_num.to_string(), text)?;
+
+    Ok(())
+}
+
+fn update_user(user_id: u64, points: u64) -> io::Result<()>
+{
+    let mut user_num = 0;
+
+    for entry in fs::read_dir(USERS_FOLDER)?
+    {
+        let entry = entry?;
+        let file = File::open(entry.path())?;
+        let reader = BufReader::new(file);
+        let mut user: User = serde_json::from_reader(reader)?;
+
+        if user.id == user_id
+        {
+            user.points = points;
+            let text = serde_json::to_string(&user)?;
+            fs::write(USERS_FOLDER.to_owned() + "/" + &user_num.to_string(), text)?;
+        }
+
+        user_num += 1;
+    }
+
+    Ok(()) 
+}
+
+// HashMap must be in Arcs to be allocated on the heap
+struct Handler
+{
+    tasks: Arc<Mutex<HashMap<u64, u8>>>,
+    users: Arc<Mutex<HashMap<u64, u64>>>
+}
 
 #[async_trait]
 impl EventHandler for Handler
@@ -88,28 +124,88 @@ impl EventHandler for Handler
 
     async fn message(&self, ctx: Context, msg: Message)
     {
-        if msg.content == "!test"
+        let message = msg.content.as_str();
+        
+        match message
         {
-            if let Err(why) = msg.channel_id.say(&ctx.http, "hello").await
+            HELP => 
             {
-                println!("Error sending message: {:?}", why);
-            }
+                if let Err(why) = msg.channel_id.say(&ctx.http, HELP_MESSAGE).await
+                {
+                    println!("Error sending message: {:?}", why);
+                }
+            },
+            ADD_TASK => // Command takes the form !add <message_id> <point value>
+            {
+                let mut command_split = msg.content.split(' '); 
+                command_split.next();
+                let message_id: u64 = command_split.next().expect("Task message ID not provided")
+                    .parse().expect("Invalid argument type provided for message ID");
+                let value: u8 = command_split.next().expect("Task point value not provided")
+                    .parse().expect("Invalid arugment type provided for point value");
+                let task = Task { message_id: message_id, value: value }; 
+
+                // Later secure that the message id provided is in the tasks channel
+                let tasks_alloc = Arc::clone(&self.tasks);
+                let tasks = tasks_alloc.lock().unwrap(); 
+                save_task(task, tasks.len()).expect("Unable to save task file");
+            },
+            &_ => println!("Invalid command")
         }
     }
 
-    async fn reaction_add(&self, ctx: Context, reaction: Reaction)
+    async fn reaction_add(&self, _ctx: Context, reaction: Reaction)
     {
         if reaction.channel_id == TASKS_CHANNEL
         {
-            let points = users.entry(reaction.user_id).or_insert(0);
-            *points += tasks.contains_key(reaction.message_id) ?
-                tasks.get(reaction.message_id) : 0;
+            if reaction.user_id.is_some()
+            {
+                let tasks_alloc = Arc::clone(&self.tasks); 
+                let users_alloc = Arc::clone(&self.users);
+                let tasks = tasks_alloc.lock().unwrap();
+                let mut users = users_alloc.lock().unwrap();
+                let user_id = reaction.user_id.unwrap().0;
+                let message_id = reaction.message_id.as_u64();
+                let user_exists = users.contains_key(&user_id);
+                
+                let points = users.entry(user_id)
+                    .or_insert(0); 
+
+                let amount: u8 = 
+                    if tasks.contains_key(message_id)
+                    {
+                        *tasks.get(message_id).unwrap()
+                    }
+                    else
+                    {
+                        0
+                    };
+
+                *points += amount as u64;
+
+                if user_exists
+                {
+                    update_user(user_id, *points)
+                        .expect("Failed to update user file");
+                }
+                else
+                {
+                    let user = User { id: user_id, points: *points };
+                    save_user(user, users.len() - 1)
+                        .expect("Failed to create user file");
+                }
+            }
         }
     }
 }
 
 #[tokio::main]
 async fn main() {
+    let mut tasks: HashMap<u64, u8> = HashMap::new();
+    let mut users: HashMap<u64, u64> = HashMap::new();
+    load_tasks(&mut tasks).expect("Could not load tasks");
+    load_users(&mut users).expect("Could not load users");
+
     let token = env::var("TOKEN")
         .expect("Expected a token in the environment");
 
@@ -117,8 +213,13 @@ async fn main() {
     let intents = GatewayIntents::MESSAGE_CONTENT
         | GatewayIntents::GUILD_MESSAGE_REACTIONS;
 
+    let handler = Handler
+    {
+        tasks: Arc::new(Mutex::new(tasks)),
+        users: Arc::new(Mutex::new(users))
+    };
     let mut client = Client::builder(&token, intents)
-        .event_handler(Handler).await.expect("Error creating client");
+        .event_handler(handler).await.expect("Error creating client");
 
     if let Err(why) = client.start().await
     {
