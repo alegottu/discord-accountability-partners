@@ -27,14 +27,14 @@ struct User
     pub points: u64 // Accumulated points for this user
 }
 
-const TASKS_FOLDER: &str = "../../res/tasks";
-const USERS_FOLDER: &str = "../../res/users";
+const TASKS_FOLDER: &str = "/home/alegottu/Projects/Rust/discord-luh-bot/res/tasks";
+const USERS_FOLDER: &str = "/home/alegottu/Projects/Rust/discord-luh-bot/res/users";
 
 const TASKS_CHANNEL: u64 = 1100541860172271697;
 
 const HELP: &str = "!help";
 const ADD_TASK: &str = "!add";
-//const BUY_ITEM: &str = "!buy";
+//const BUY_ITEM: &str = "!buy";   
 
 const HELP_MESSAGE: &str = "!add <task> adds a task";
 
