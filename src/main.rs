@@ -41,7 +41,6 @@ const REWARDS_FOLDER: &str = "/home/alegottu/Projects/Rust/discord-luh-bot/res/r
 const TASKS_CHANNEL: u64 = 1100541860172271697;
 const REWARDS_CHANNEL: u64 = 1100541860172271697; // INNACURATE CHANGE LATER
 
-
 const HELP: &str = "!help";
 const ADD_TASK: &str = "!add task";
 const ADD_REWARD: &str = "!add reward";
