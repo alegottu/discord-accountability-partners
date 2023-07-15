@@ -150,6 +150,14 @@ struct Handler
     rewards: Arc<Mutex<HashMap<u64, u16>>>
 }
 
+async fn send_message(text: &String, ctx: Context, msg: Message)
+{
+    if let Err(why) = msg.channel_id.say(&ctx.http, text).await
+    {
+        println!("Error sending message: {:?}", why);
+    }
+}
+
 #[async_trait]
 impl EventHandler for Handler
 {
@@ -164,22 +172,16 @@ impl EventHandler for Handler
         
         match message
         {
-            HELP => 
+            HELP =>
             {
-                if let Err(why) = msg.channel_id.say(&ctx.http, HELP_MESSAGE).await
-                {
-                    println!("Error sending message: {:?}", why);
-                }
+                send_message(&HELP_MESSAGE.to_owned(), ctx, msg).await; 
             },
             CHECK_BALANCE =>
             {
-                let users_alloc = Arc::clone(&self.users);
-                let users = users_alloc.lock().unwrap();
-                let points = users[&msg.author.id.0].to_string();
+                let points = Arc::clone(&self.users).lock().unwrap()
+                    [&msg.author.id.0].to_string();
                 let message_to_send = format!("{}{}{}", "You have ", points, " total");
-
-                msg.channel_id.say(&ctx.http, message_to_send);
-                // Figure out way to poll above
+                send_message(&message_to_send, ctx, msg).await;
             },
             &_ =>
             {
@@ -267,14 +269,42 @@ impl EventHandler for Handler
             }
             else if reaction.channel_id == REWARDS_CHANNEL
             {
-                todo!();
+                let rewards_alloc = Arc::clone(&self.rewards); 
+                let users_alloc = Arc::clone(&self.users);
+                let rewards = rewards_alloc.lock().unwrap();
+                let mut users = users_alloc.lock().unwrap();
+                let user_id = reaction.user_id.unwrap().0;
+                let message_id = reaction.message_id.as_u64();
+
+                let points = users.entry(user_id)
+                    .or_insert(0); 
+
+                if rewards.contains_key(message_id)
+                {
+                    let cost = *rewards.get(message_id).unwrap() as u64;
+
+                    if *points >= cost
+                    {
+                        *points -= cost;
+                    }
+                    else
+                    {
+                        println!("Insufficient points to purchase this reward");
+                        // Change this to discord message later
+                    }
+                }
+                else
+                {
+                    println!("Invalid reward message");
+                }
             }
         }
     }
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() 
+{
     let mut tasks: HashMap<u64, u16> = HashMap::new();
     let mut users: HashMap<u64, u64> = HashMap::new();
     let mut rewards: HashMap<u64, u16> = HashMap::new();
