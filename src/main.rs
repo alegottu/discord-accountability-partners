@@ -43,10 +43,13 @@ const REWARDS_CHANNEL: u64 = 1100541860172271697; // INNACURATE CHANGE LATER
 
 const HELP: &str = "!help";
 const ADD_TASK: &str = "!add task";
+// const DELETE_TASK: &str = "!delete task";
 const ADD_REWARD: &str = "!add reward";
+// const DELETE_REWARD: &str = "!delete reward";
 const CHECK_BALANCE: &str = "!balance";
-// const UNDO: &str = "!undo";
-// Would require table of past user actions
+
+// Below requires thorough checks or otherwise infinite money
+// const SELL_REWARD: &str = "!sell";
 
 const HELP_MESSAGE: &str = "!add <task_message_id> <point_value> adds a task\n!balance checks your point balance";
 
@@ -150,9 +153,9 @@ struct Handler
     rewards: Arc<Mutex<HashMap<u64, u16>>>
 }
 
-async fn send_message(text: &String, ctx: Context, msg: Message)
+async fn send_message(text: &String, ctx: Context, channel_id: ChannelId)
 {
-    if let Err(why) = msg.channel_id.say(&ctx.http, text).await
+    if let Err(why) = channel_id.say(&ctx.http, text).await
     {
         println!("Error sending message: {:?}", why);
     }
@@ -174,14 +177,14 @@ impl EventHandler for Handler
         {
             HELP =>
             {
-                send_message(&HELP_MESSAGE.to_owned(), ctx, msg).await; 
+                send_message(&HELP_MESSAGE.to_owned(), ctx, msg.channel_id).await; 
             },
             CHECK_BALANCE =>
             {
                 let points = Arc::clone(&self.users).lock().unwrap()
                     [&msg.author.id.0].to_string();
                 let message_to_send = format!("{}{}{}", "You have ", points, " total");
-                send_message(&message_to_send, ctx, msg).await;
+                send_message(&message_to_send, ctx, msg.channel_id).await;
             },
             &_ =>
             {
@@ -196,7 +199,6 @@ impl EventHandler for Handler
                         .parse().expect("Invalid arugment type provided for point value");
                     let task = Task { message_id: message_id, value: value }; 
 
-                    // Later secure that the message id provided is in the tasks channel
                     let tasks_alloc = Arc::clone(&self.tasks);
                     let tasks = tasks_alloc.lock().unwrap(); 
                     save_task(task, tasks.len()).expect("Unable to save task file");
@@ -212,7 +214,6 @@ impl EventHandler for Handler
                         .parse().expect("Invalid arugment type provided for cost");
                     let reward = Reward { message_id: message_id, cost: cost };
 
-                    // Later secure that the message id provided is in the tasks channel
                     let rewards_alloc = Arc::clone(&self.rewards);
                     let rewards = rewards_alloc.lock().unwrap(); 
                     save_reward(reward, rewards.len()).expect("Unable to save reward file");
@@ -225,80 +226,99 @@ impl EventHandler for Handler
         }
     }
 
-    async fn reaction_add(&self, _ctx: Context, reaction: Reaction)
+    async fn reaction_add(&self, ctx: Context, reaction: Reaction)
     {
-        if reaction.channel_id == TASKS_CHANNEL
+        if reaction.user_id.is_some()
         {
-            if reaction.user_id.is_some()
+            if reaction.channel_id == TASKS_CHANNEL
             {
-                let tasks_alloc = Arc::clone(&self.tasks); 
-                let users_alloc = Arc::clone(&self.users);
-                let tasks = tasks_alloc.lock().unwrap();
-                let mut users = users_alloc.lock().unwrap();
-                let user_id = reaction.user_id.unwrap().0;
-                let message_id = reaction.message_id.as_u64();
-                let user_exists = users.contains_key(&user_id);
-                
-                let points = users.entry(user_id)
-                    .or_insert(0); 
+                {
+                    let tasks_alloc = Arc::clone(&self.tasks); 
+                    let users_alloc = Arc::clone(&self.users);
+                    let tasks = tasks_alloc.lock().unwrap();
+                    let mut users = users_alloc.lock().unwrap();
+                    let user_id = reaction.user_id.unwrap().0;
+                    let message_id = reaction.message_id.as_u64();
+                    let user_exists = users.contains_key(&user_id);
+                    
+                    let points = users.entry(user_id)
+                        .or_insert(0); 
 
-                let amount: u16 = 
-                    if tasks.contains_key(message_id)
+                    let amount: u16 = 
+                        if tasks.contains_key(message_id)
+                        {
+                            *tasks.get(message_id).unwrap()
+                        }
+                        else
+                        {
+                            0
+                        };
+
+                    *points += amount as u64;
+
+                    if user_exists
                     {
-                        *tasks.get(message_id).unwrap()
+                        update_user(user_id, *points)
+                            .expect("Failed to update user file");
                     }
                     else
                     {
-                        0
-                    };
-
-                *points += amount as u64;
-
-                if user_exists
-                {
-                    update_user(user_id, *points)
-                        .expect("Failed to update user file");
+                        let user = User { id: user_id, points: *points };
+                        save_user(user, users.len() - 1)
+                            .expect("Failed to create user file");
+                    }
                 }
-                else
+
+                // Make sure bot has "MANAGE_MESSAGES" permission
+                if let Err(why) = reaction.delete(&ctx.http).await
                 {
-                    let user = User { id: user_id, points: *points };
-                    save_user(user, users.len() - 1)
-                        .expect("Failed to create user file");
+                    println!("Error deleting recent reaction {:?}", why);
                 }
-                // Remove reaction at end of process; any reaction can be used
             }
             else if reaction.channel_id == REWARDS_CHANNEL
             {
-                let rewards_alloc = Arc::clone(&self.rewards); 
-                let users_alloc = Arc::clone(&self.users);
-                let rewards = rewards_alloc.lock().unwrap();
-                let mut users = users_alloc.lock().unwrap();
-                let user_id = reaction.user_id.unwrap().0;
-                let message_id = reaction.message_id.as_u64();
+                let mut fail = false;
 
-                let points = users.entry(user_id)
-                    .or_insert(0); 
-
-                if rewards.contains_key(message_id)
                 {
-                    let cost = *rewards.get(message_id).unwrap() as u64;
+                    let rewards_alloc = Arc::clone(&self.rewards); 
+                    let users_alloc = Arc::clone(&self.users);
+                    let rewards = rewards_alloc.lock().unwrap();
+                    let mut users = users_alloc.lock().unwrap();
+                    let user_id = reaction.user_id.unwrap().0;
+                    let message_id = reaction.message_id.as_u64();
 
-                    if *points >= cost
+                    let points = users.entry(user_id)
+                        .or_insert(0); 
+
+                    if rewards.contains_key(message_id)
                     {
-                        *points -= cost;
+                        let cost = *rewards.get(message_id).unwrap() as u64;
+
+                        if *points >= cost
+                        {
+                            *points -= cost;
+                        }
+                        else
+                        {
+                            // To indicate that a message should be sent later once futures are dropped
+                            fail = true;
+                        }
                     }
                     else
                     {
-                        println!("Insufficient points to purchase this reward");
-                        // Change this to discord message later
+                        println!("Reaction sent from invalid message in rewards channel");
                     }
                 }
-                else
+                
+                if fail
                 {
-                    println!("Invalid reward message");
+                    send_message(&"Insufficient points to purchase this reward".to_owned(), ctx, reaction.channel_id).await;
                 }
+
+                // User can remove reaction themselves to indicate the reward has been used
             }
         }
+
     }
 }
 
