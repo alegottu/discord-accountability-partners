@@ -177,6 +177,7 @@ impl EventHandler for Handler
         {
             HELP =>
             {
+                println!("Success");
                 send_message(&HELP_MESSAGE.to_owned(), ctx, msg.channel_id).await; 
             },
             CHECK_BALANCE =>
