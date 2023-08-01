@@ -1,7 +1,7 @@
 use std::env;
 use std::sync::{Arc, Mutex};
 use std::fs::{self, File};
-use std::io::{self, BufReader};
+use std::io::{self, BufReader, Error, ErrorKind};
 use std::collections::HashMap;
 
 use serenity::
@@ -38,8 +38,8 @@ const TASKS_FOLDER: &str = "/home/alegottu/Projects/Rust/discord-luh-bot/res/tas
 const USERS_FOLDER: &str = "/home/alegottu/Projects/Rust/discord-luh-bot/res/users";
 const REWARDS_FOLDER: &str = "/home/alegottu/Projects/Rust/discord-luh-bot/res/rewards";
 
-const TASKS_CHANNEL: u64 = 1100541860172271697;
-const REWARDS_CHANNEL: u64 = 1100541860172271697; // INNACURATE CHANGE LATER
+const TASKS_CHANNEL: u64 = 1131139960129474602;
+const REWARDS_CHANNEL: u64 = 1131139932040200343;
 
 const HELP: &str = "!help";
 const ADD_TASK: &str = "!add task";
@@ -100,7 +100,8 @@ fn load_rewards(rewards: &mut HashMap<u64, u16>) -> io::Result<()>
 fn save_task(task: Task, task_num: usize) -> io::Result<()>
 {
     let text = serde_json::to_string(&task)?;
-    fs::write(TASKS_FOLDER.to_owned() + "/" + &task_num.to_string(), text)?;
+    let file_name = format!("{}/{}.json", TASKS_FOLDER, task_num.to_string());
+    fs::write(file_name, text)?;
 
     Ok(())
 }
@@ -108,7 +109,8 @@ fn save_task(task: Task, task_num: usize) -> io::Result<()>
 fn save_user(user: User, user_num: usize) -> io::Result<()> 
 {
     let text = serde_json::to_string(&user)?;
-    fs::write(USERS_FOLDER.to_owned() + "/" + &user_num.to_string(), text)?;
+    let file_name = format!("{}/{}.json", USERS_FOLDER, user_num.to_string());
+    fs::write(file_name, text)?;
 
     Ok(())
 }
@@ -129,18 +131,21 @@ fn update_user(user_id: u64, points: u64) -> io::Result<()>
             user.points = points;
             let text = serde_json::to_string(&user)?;
             fs::write(USERS_FOLDER.to_owned() + "/" + &user_num.to_string(), text)?;
+
+            return Ok(());
         }
 
         user_num += 1;
     }
 
-    Ok(()) 
+    Err(Error::new(ErrorKind::Other, "Could not find a file for the correct user"))
 }
 
 fn save_reward(reward: Reward, reward_num: usize) -> io::Result<()>
 {
     let text = serde_json::to_string(&reward)?;
-    fs::write(REWARDS_FOLDER.to_owned() + "/" + &reward_num.to_string(), text)?;
+    let file_name = format!("{}/{}.json", REWARDS_FOLDER, reward_num.to_string());
+    fs::write(file_name, text)?;
 
     Ok(())
 }
@@ -153,11 +158,17 @@ struct Handler
     rewards: Arc<Mutex<HashMap<u64, u16>>>
 }
 
-async fn send_message(text: &String, ctx: Context, channel_id: ChannelId)
+async fn send_message(text: &String, ctx: Context, user_id: UserId)
 {
-    if let Err(why) = channel_id.say(&ctx.http, text).await
+    let dm = user_id.create_dm_channel(&ctx.http).await;
+    
+    if let Err(why) = dm
     {
-        println!("Error sending message: {:?}", why);
+        println!("Error creating private channel with user: {:?}", why);
+    }
+    else if let Err(why) = dm.unwrap().say(&ctx.http, text).await
+    {
+        println!("Error sending private message to user: {:?}", why); 
     }
 }
 
@@ -177,15 +188,14 @@ impl EventHandler for Handler
         {
             HELP =>
             {
-                println!("Success");
-                send_message(&HELP_MESSAGE.to_owned(), ctx, msg.channel_id).await; 
+                send_message(&HELP_MESSAGE.to_owned(), ctx, msg.author.id).await; 
             },
             CHECK_BALANCE =>
             {
                 let points = Arc::clone(&self.users).lock().unwrap()
                     [&msg.author.id.0].to_string();
                 let message_to_send = format!("{}{}{}", "You have ", points, " total");
-                send_message(&message_to_send, ctx, msg.channel_id).await;
+                send_message(&message_to_send, ctx, msg.author.id).await;
             },
             &_ =>
             {
@@ -233,6 +243,8 @@ impl EventHandler for Handler
         {
             if reaction.channel_id == TASKS_CHANNEL
             {
+                let points;
+
                 {
                     let tasks_alloc = Arc::clone(&self.tasks); 
                     let users_alloc = Arc::clone(&self.users);
@@ -242,7 +254,7 @@ impl EventHandler for Handler
                     let message_id = reaction.message_id.as_u64();
                     let user_exists = users.contains_key(&user_id);
                     
-                    let points = users.entry(user_id)
+                    let points_entry = users.entry(user_id)
                         .or_insert(0); 
 
                     let amount: u16 = 
@@ -255,16 +267,17 @@ impl EventHandler for Handler
                             0
                         };
 
-                    *points += amount as u64;
+                    *points_entry += amount as u64;
+                    points = *points_entry;
 
                     if user_exists
                     {
-                        update_user(user_id, *points)
+                        update_user(user_id, points)
                             .expect("Failed to update user file");
                     }
                     else
                     {
-                        let user = User { id: user_id, points: *points };
+                        let user = User { id: user_id, points: points };
                         save_user(user, users.len() - 1)
                             .expect("Failed to create user file");
                     }
@@ -273,12 +286,16 @@ impl EventHandler for Handler
                 // Make sure bot has "MANAGE_MESSAGES" permission
                 if let Err(why) = reaction.delete(&ctx.http).await
                 {
-                    println!("Error deleting recent reaction {:?}", why);
+                    println!("Error deleting recent task reaction {:?}", why);
                 }
+
+                let message_to_send = format!("Task complete! You now have a total of {} LP", points); 
+                send_message(&message_to_send, ctx, reaction.user_id.unwrap()).await;
             }
             else if reaction.channel_id == REWARDS_CHANNEL
             {
                 let mut fail = false;
+                let mut points: u64 = 0;
 
                 {
                     let rewards_alloc = Arc::clone(&self.rewards); 
@@ -288,20 +305,20 @@ impl EventHandler for Handler
                     let user_id = reaction.user_id.unwrap().0;
                     let message_id = reaction.message_id.as_u64();
 
-                    let points = users.entry(user_id)
+                    let points_entry = users.entry(user_id)
                         .or_insert(0); 
 
                     if rewards.contains_key(message_id)
                     {
                         let cost = *rewards.get(message_id).unwrap() as u64;
 
-                        if *points >= cost
+                        if *points_entry >= cost
                         {
-                            *points -= cost;
+                            *points_entry -= cost;
+                            points = *points_entry;
                         }
                         else
                         {
-                            // To indicate that a message should be sent later once futures are dropped
                             fail = true;
                         }
                     }
@@ -313,13 +330,24 @@ impl EventHandler for Handler
                 
                 if fail
                 {
-                    send_message(&"Insufficient points to purchase this reward".to_owned(), ctx, reaction.channel_id).await;
-                }
+                    let _ctx = ctx.clone();
+                    send_message(&"Insufficient points to purchase this reward".to_owned(), _ctx, reaction.user_id.unwrap()).await;
 
-                // User can remove reaction themselves to indicate the reward has been used
+                    if let Err(why) = reaction.delete(&ctx.http).await
+                    {
+                        println!("Error deleting recent reward reaction {:?}", why);
+                    }
+                }
+                else
+                {
+                    let message_to_send = format!(
+                        "Reward purchased! Remove your reaction oonce you have used this reward. Your balance is now {} LP",
+                        points);
+                    send_message(&message_to_send, 
+                        ctx, reaction.user_id.unwrap()).await;
+                }
             }
         }
-
     }
 }
 
@@ -338,7 +366,8 @@ async fn main()
 
     // Sets what bot is notified about
     let intents = GatewayIntents::MESSAGE_CONTENT
-        | GatewayIntents::GUILD_MESSAGE_REACTIONS;
+        | GatewayIntents::GUILD_MESSAGE_REACTIONS
+        | GatewayIntents::DIRECT_MESSAGES;
 
     let handler = Handler
     {
