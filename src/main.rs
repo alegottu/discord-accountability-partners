@@ -40,6 +40,7 @@ const REWARDS_FOLDER: &str = "/home/alegottu/Projects/Rust/discord-luh-bot/res/r
 
 const TASKS_CHANNEL: u64 = 1131139960129474602;
 const REWARDS_CHANNEL: u64 = 1131139932040200343;
+const BOT_ID: u64 = 1131137661998993420;
 
 const HELP: &str = "!help";
 const ADD_TASK: &str = "!add task";
@@ -51,7 +52,7 @@ const CHECK_BALANCE: &str = "!balance";
 // Below requires thorough checks or otherwise infinite money
 // const SELL_REWARD: &str = "!sell";
 
-const HELP_MESSAGE: &str = "!add <task_message_id> <point_value> adds a task\n!balance checks your point balance";
+const HELP_MESSAGE: &str = "!add task <task_message_id> <point_value> adds a task\n!add reward <reward_message_id> <cost> adds a reward\n!balance checks your point balance";
 
 fn load_tasks(tasks: &mut HashMap<u64, u16>) -> io::Result<()>
 {
@@ -130,7 +131,8 @@ fn update_user(user_id: u64, points: u64) -> io::Result<()>
         {
             user.points = points;
             let text = serde_json::to_string(&user)?;
-            fs::write(USERS_FOLDER.to_owned() + "/" + &user_num.to_string(), text)?;
+            let file_name = format!("{}/{}.json", USERS_FOLDER, user_num);
+            fs::write(file_name, text)?;
 
             return Ok(());
         }
@@ -182,6 +184,8 @@ impl EventHandler for Handler
 
     async fn message(&self, ctx: Context, msg: Message)
     {
+        if msg.author.id.0 == BOT_ID { return; } 
+
         let message = msg.content.as_str();
         
         match message
@@ -194,7 +198,7 @@ impl EventHandler for Handler
             {
                 let points = Arc::clone(&self.users).lock().unwrap()
                     [&msg.author.id.0].to_string();
-                let message_to_send = format!("{}{}{}", "You have ", points, " total");
+                let message_to_send = format!("{}{}{}", "You have ", points, " LP");
                 send_message(&message_to_send, ctx, msg.author.id).await;
             },
             &_ =>
@@ -211,7 +215,8 @@ impl EventHandler for Handler
                     let task = Task { message_id: message_id, value: value }; 
 
                     let tasks_alloc = Arc::clone(&self.tasks);
-                    let tasks = tasks_alloc.lock().unwrap(); 
+                    let mut tasks = tasks_alloc.lock().unwrap(); 
+                    tasks.insert(message_id, value);
                     save_task(task, tasks.len()).expect("Unable to save task file");
                 }
                 else if message.contains(ADD_REWARD) // Possibly to try to merge some of this with above case, command split the same
@@ -226,7 +231,8 @@ impl EventHandler for Handler
                     let reward = Reward { message_id: message_id, cost: cost };
 
                     let rewards_alloc = Arc::clone(&self.rewards);
-                    let rewards = rewards_alloc.lock().unwrap(); 
+                    let mut rewards = rewards_alloc.lock().unwrap(); 
+                    rewards.insert(message_id, cost);
                     save_reward(reward, rewards.len()).expect("Unable to save reward file");
                 }
                 else 
@@ -272,12 +278,14 @@ impl EventHandler for Handler
 
                     if user_exists
                     {
+                        *users.get_mut(&user_id).unwrap() = points;
                         update_user(user_id, points)
                             .expect("Failed to update user file");
                     }
                     else
                     {
                         let user = User { id: user_id, points: points };
+                        users.insert(user_id, points);
                         save_user(user, users.len() - 1)
                             .expect("Failed to create user file");
                     }
@@ -316,6 +324,7 @@ impl EventHandler for Handler
                         {
                             *points_entry -= cost;
                             points = *points_entry;
+                            update_user(user_id, points).expect("Failed to update user");
                         }
                         else
                         {
