@@ -1,14 +1,23 @@
+use std::convert::Infallible;
 use std::env;
 use std::sync::{Arc, Mutex};
-use std::fs::{self, File};
-use std::io::{self, BufReader, Error, ErrorKind};
 use std::collections::HashMap;
 
 use serenity::
 {
     async_trait,
-    model::{prelude::*, channel::Message, gateway::Ready},
+    model::
+    {
+        prelude::*, 
+        channel::
+        {
+            Message,
+            MessagesIter
+        }
+        gateway::Ready
+    },
     prelude::*,
+    futures::StreamExt,
     Client
 };
 use serde::{Serialize, Deserialize};
@@ -17,7 +26,7 @@ use serde::{Serialize, Deserialize};
 struct Task
 {
     pub message_id: u64, // The message to react to to gain points
-    pub value: u16 // How many points the task is worth
+    pub value: u64 // How many points the task is worth
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -31,7 +40,7 @@ struct User
 struct Reward
 {
     pub message_id: u64, // The message to react to buy this reward
-    pub cost: u16 // How many points the reward costs
+    pub cost: u64 // How many points the reward costs
 }
 
 const TASKS_FOLDER: &str = "/home/alegottu/Projects/Rust/discord-luh-bot/res/tasks";
@@ -43,79 +52,44 @@ const REWARDS_CHANNEL: u64 = 1131139932040200343;
 const BOT_ID: u64 = 1131137661998993420;
 
 const HELP: &str = "!help";
-const ADD_TASK: &str = "!add task";
 // const DELETE_TASK: &str = "!delete task";
-const ADD_REWARD: &str = "!add reward";
 // const DELETE_REWARD: &str = "!delete reward";
 const CHECK_BALANCE: &str = "!balance";
 
 // Below requires thorough checks or otherwise infinite money
 // const SELL_REWARD: &str = "!sell";
 
-const HELP_MESSAGE: &str = "!add task <task_message_id> <point_value> adds a task\n!add reward <reward_message_id> <cost> adds a reward\n!balance checks your point balance";
+const HELP_MESSAGE: &str = "!balance to check your current LP balance";
 
-fn load_tasks(tasks: &mut HashMap<u64, u16>) -> io::Result<()>
+// Expects users to write all objects in the correct format through their own messages
+async fn load_objects(map: &mut HashMap<u64, u64>, ctx: Context, channel_id: u64) -> Result<(),()>
 {
-    for entry in fs::read_dir(TASKS_FOLDER)?
+    let channel_id = ChannelId(channel_id);
+    let mut messages = channel_id.messages_iter(&ctx).boxed(); 
+
+    while let Some(message_result) = messages.next().await 
     {
-        let entry = entry?;
-        let file = File::open(entry.path())?; // Forward error if unable to open file
-        let reader = BufReader::new(file);
-        let task: Task = serde_json::from_reader(reader)?;
-        tasks.insert(task.message_id, task.value);
+        match message_result
+        {
+            Ok(message) =>
+            {
+                let point_arg = message.content
+                    .split(" ").nth(1)
+                    .expect("Not enough arguments in message")
+                    .parse().expect("Invalid type given for point argument");
+                map.insert(message.id.0, point_arg);
+            },
+            Err(error) => 
+            {
+                return Err(());
+            }
+        }
     }
 
     Ok(())
 }
 
-fn load_users(users: &mut HashMap<u64, u64>) -> io::Result<()>
-{
-    for entry in fs::read_dir(USERS_FOLDER)?
-    {
-        let entry = entry?;
-        let file = File::open(entry.path())?;
-        let reader = BufReader::new(file);
-        let user: User = serde_json::from_reader(reader)?;
-        users.insert(user.id, user.points);
-    }
-
-    Ok(())
-}
-
-fn load_rewards(rewards: &mut HashMap<u64, u16>) -> io::Result<()>
-{
-    for entry in fs::read_dir(REWARDS_FOLDER)?
-    {
-        let entry = entry?;
-        let file = File::open(entry.path())?;
-        let reader = BufReader::new(file);
-        let reward: Reward = serde_json::from_reader(reader)?;
-        rewards.insert(reward.message_id, reward.cost);
-    }
-
-    Ok(())
-
-}
-
-// Functions to save JSON files
-fn save_task(task: Task, task_num: usize) -> io::Result<()>
-{
-    let text = serde_json::to_string(&task)?;
-    let file_name = format!("{}/{}.json", TASKS_FOLDER, task_num.to_string());
-    fs::write(file_name, text)?;
-
-    Ok(())
-}
-
-fn save_user(user: User, user_num: usize) -> io::Result<()> 
-{
-    let text = serde_json::to_string(&user)?;
-    let file_name = format!("{}/{}.json", USERS_FOLDER, user_num.to_string());
-    fs::write(file_name, text)?;
-
-    Ok(())
-}
-
+// Edit user channel messages
 fn update_user(user_id: u64, points: u64) -> io::Result<()>
 {
     let mut user_num = 0;
@@ -141,15 +115,6 @@ fn update_user(user_id: u64, points: u64) -> io::Result<()>
     }
 
     Err(Error::new(ErrorKind::Other, "Could not find a file for the correct user"))
-}
-
-fn save_reward(reward: Reward, reward_num: usize) -> io::Result<()>
-{
-    let text = serde_json::to_string(&reward)?;
-    let file_name = format!("{}/{}.json", REWARDS_FOLDER, reward_num.to_string());
-    fs::write(file_name, text)?;
-
-    Ok(())
 }
 
 // HashMap must be in Arcs to be allocated on the heap
