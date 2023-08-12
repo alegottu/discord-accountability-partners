@@ -1,4 +1,3 @@
-use std::convert::Infallible;
 use std::env;
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
@@ -9,52 +8,23 @@ use serenity::
     model::
     {
         prelude::*, 
-        channel::
-        {
-            Message,
-            MessagesIter
-        }
+        channel::Message,
         gateway::Ready
     },
     prelude::*,
     futures::StreamExt,
     Client
 };
-use serde::{Serialize, Deserialize};
 
-#[derive(Serialize, Deserialize, Debug)]
-struct Task
-{
-    pub message_id: u64, // The message to react to to gain points
-    pub value: u64 // How many points the task is worth
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct User
-{
-    pub id: u64,
-    pub points: u64 // Accumulated points for this user
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct Reward
-{
-    pub message_id: u64, // The message to react to buy this reward
-    pub cost: u64 // How many points the reward costs
-}
-
-const TASKS_FOLDER: &str = "/home/alegottu/Projects/Rust/discord-luh-bot/res/tasks";
-const USERS_FOLDER: &str = "/home/alegottu/Projects/Rust/discord-luh-bot/res/users";
-const REWARDS_FOLDER: &str = "/home/alegottu/Projects/Rust/discord-luh-bot/res/rewards";
-
+// Make it so that these can be set after runtime using commands in a DM with Admin
 const TASKS_CHANNEL: u64 = 1131139960129474602;
 const REWARDS_CHANNEL: u64 = 1131139932040200343;
+const USERS_CHANNEL: u64 = 1135811709936861195;
 const BOT_ID: u64 = 1131137661998993420;
 
 const HELP: &str = "!help";
-// const DELETE_TASK: &str = "!delete task";
-// const DELETE_REWARD: &str = "!delete reward";
 const CHECK_BALANCE: &str = "!balance";
+const RELOAD: &str = "!reload";
 
 // Below requires thorough checks or otherwise infinite money
 // const SELL_REWARD: &str = "!sell";
@@ -62,7 +32,7 @@ const CHECK_BALANCE: &str = "!balance";
 const HELP_MESSAGE: &str = "!balance to check your current LP balance";
 
 // Expects users to write all objects in the correct format through their own messages
-async fn load_objects(map: &mut HashMap<u64, u64>, ctx: Context, channel_id: u64) -> Result<(),()>
+async fn load_objects(map: &mut HashMap<u64, u64>, ctx: Context, channel_id: u64) 
 {
     let channel_id = ChannelId(channel_id);
     let mut messages = channel_id.messages_iter(&ctx).boxed(); 
@@ -81,51 +51,60 @@ async fn load_objects(map: &mut HashMap<u64, u64>, ctx: Context, channel_id: u64
             },
             Err(error) => 
             {
-                return Err(());
+                println!("{:?}", error);
             }
         }
     }
+}
 
-    Ok(())
+// Returns message ID of message sent if successful
+async fn send_message(text: &String, ctx: Context, channel_id: ChannelId) -> Result<u64, ()>
+{
+    let message_result = channel_id.say(&ctx.http, text).await;
+    
+    match message_result
+    {
+        Ok(message) => return Ok(message.id.0),
+        Err(error) => return Err(()) 
+    }
+}
+
+// Create a message for a user upon their first reaction
+async fn save_user(user_id: u64, starting_points: u64, ctx: Context, users: &mut HashMap<u64, u64>, user_posts: &mut HashMap<u64, u64>)
+{
+    let text = format!("{} {}", user_id, starting_points);
+    let channel_id = ChannelId(USERS_CHANNEL);
+    let message_id = send_message(&text, ctx, channel_id)
+        .await.expect("Unable to send message"); 
+
+    users.insert(user_id, starting_points);
+    user_posts.insert(user_id, message_id);
 }
 
 // Edit user channel messages
-fn update_user(user_id: u64, points: u64) -> io::Result<()>
+async fn update_user(user_id: u64, message_id: u64,  points: u64, ctx: Context, users: &mut HashMap<u64, u64>)
 {
-    let mut user_num = 0;
+    let channel_id = ChannelId(USERS_CHANNEL);
 
-    for entry in fs::read_dir(USERS_FOLDER)?
+    if let Err(why) = channel_id.edit_message(&ctx.http, message_id,
+        |message| message.content(points.to_string())).await
     {
-        let entry = entry?;
-        let file = File::open(entry.path())?;
-        let reader = BufReader::new(file);
-        let mut user: User = serde_json::from_reader(reader)?;
-
-        if user.id == user_id
-        {
-            user.points = points;
-            let text = serde_json::to_string(&user)?;
-            let file_name = format!("{}/{}.json", USERS_FOLDER, user_num);
-            fs::write(file_name, text)?;
-
-            return Ok(());
-        }
-
-        user_num += 1;
+        println!("{:?}", why);
     }
-
-    Err(Error::new(ErrorKind::Other, "Could not find a file for the correct user"))
+    
+    *users.get_mut(&user_id).expect("User does not exist") = points;
 }
 
 // HashMap must be in Arcs to be allocated on the heap
 struct Handler
 {
-    tasks: Arc<Mutex<HashMap<u64, u16>>>,
+    tasks: Arc<Mutex<HashMap<u64, u64>>>,
     users: Arc<Mutex<HashMap<u64, u64>>>,
-    rewards: Arc<Mutex<HashMap<u64, u16>>>
+    user_posts: Arc<Mutex<HashMap<u64, u64>>>, // Maps each user to their coresponding tracking post
+    rewards: Arc<Mutex<HashMap<u64, u64>>>
 }
 
-async fn send_message(text: &String, ctx: Context, user_id: UserId)
+async fn send_private(text: &String, ctx: Context, user_id: UserId)
 {
     let dm = user_id.create_dm_channel(&ctx.http).await;
     
@@ -157,53 +136,22 @@ impl EventHandler for Handler
         {
             HELP =>
             {
-                send_message(&HELP_MESSAGE.to_owned(), ctx, msg.author.id).await; 
+                send_message(&HELP_MESSAGE.to_owned(), ctx, msg.channel_id).await; 
             },
             CHECK_BALANCE =>
             {
                 let points = Arc::clone(&self.users).lock().unwrap()
                     [&msg.author.id.0].to_string();
                 let message_to_send = format!("{}{}{}", "You have ", points, " LP");
-                send_message(&message_to_send, ctx, msg.author.id).await;
+                send_message(&message_to_send, ctx, msg.channel_id).await;
             },
+            RELOAD =>
+            {
+                // Load objects x3
+            }
             &_ =>
             {
-                if message.contains(ADD_TASK)
-                {
-                    // Command takes the form !add task <message_id> <point value>
-                    let mut command_split = msg.content.split(' '); 
-                    command_split.nth(1);
-                    let message_id: u64 = command_split.next().expect("Task message ID not provided")
-                        .parse().expect("Invalid argument type provided for message ID");
-                    let value: u16 = command_split.next().expect("Task point value not provided")
-                        .parse().expect("Invalid arugment type provided for point value");
-                    let task = Task { message_id: message_id, value: value }; 
-
-                    let tasks_alloc = Arc::clone(&self.tasks);
-                    let mut tasks = tasks_alloc.lock().unwrap(); 
-                    tasks.insert(message_id, value);
-                    save_task(task, tasks.len()).expect("Unable to save task file");
-                }
-                else if message.contains(ADD_REWARD) // Possibly to try to merge some of this with above case, command split the same
-                {
-                    // Command takes the form !add reward <message_id> <cost>
-                    let mut command_split = msg.content.split(' '); 
-                    command_split.nth(1);
-                    let message_id: u64 = command_split.next().expect("Reward message ID not provided")
-                        .parse().expect("Invalid argument type provided for message ID");
-                    let cost: u16 = command_split.next().expect("Reward cost not provided")
-                        .parse().expect("Invalid arugment type provided for cost");
-                    let reward = Reward { message_id: message_id, cost: cost };
-
-                    let rewards_alloc = Arc::clone(&self.rewards);
-                    let mut rewards = rewards_alloc.lock().unwrap(); 
-                    rewards.insert(message_id, cost);
-                    save_reward(reward, rewards.len()).expect("Unable to save reward file");
-                }
-                else 
-                {
-                    println!("Invalid command");
-                }
+                println!("Invalid command");
             }
         }
     }
@@ -219,16 +167,18 @@ impl EventHandler for Handler
                 {
                     let tasks_alloc = Arc::clone(&self.tasks); 
                     let users_alloc = Arc::clone(&self.users);
+                    let user_posts_alloc = Arc::clone(&self.user_posts);
                     let tasks = tasks_alloc.lock().unwrap();
                     let mut users = users_alloc.lock().unwrap();
+                    let user_posts = user_posts_alloc.lock().unwrap();
                     let user_id = reaction.user_id.unwrap().0;
                     let message_id = reaction.message_id.as_u64();
                     let user_exists = users.contains_key(&user_id);
-                    
+
                     let points_entry = users.entry(user_id)
                         .or_insert(0); 
 
-                    let amount: u16 = 
+                    let amount: u64 = 
                         if tasks.contains_key(message_id)
                         {
                             *tasks.get(message_id).unwrap()
@@ -244,14 +194,16 @@ impl EventHandler for Handler
                     if user_exists
                     {
                         *users.get_mut(&user_id).unwrap() = points;
-                        update_user(user_id, points)
+                        let user_post_id = user_posts.get(user_id);
+                        update_user(user_id, user_post_id, points, ctx, &mut users)
+                            .await
                             .expect("Failed to update user file");
                     }
                     else
                     {
-                        let user = User { id: user_id, points: points };
                         users.insert(user_id, points);
-                        save_user(user, users.len() - 1)
+                        let user_post_id = save_user(user_id, points, ctx, &mut users, &mut user_posts)
+                            .await?
                             .expect("Failed to create user file");
                     }
                 }
@@ -263,7 +215,7 @@ impl EventHandler for Handler
                 }
 
                 let message_to_send = format!("Task complete! You now have a total of {} LP", points); 
-                send_message(&message_to_send, ctx, reaction.user_id.unwrap()).await;
+                send_private(&message_to_send, ctx, reaction.user_id.unwrap()).await;
             }
             else if reaction.channel_id == REWARDS_CHANNEL
             {
