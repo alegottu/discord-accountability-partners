@@ -1,6 +1,7 @@
 use std::env;
-use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
+use std::sync::Arc;
+use async_std::sync::Mutex;
 
 use serenity::
 {
@@ -24,7 +25,7 @@ const BOT_ID: u64 = 1131137661998993420;
 
 const HELP: &str = "!help";
 const CHECK_BALANCE: &str = "!balance";
-const RELOAD: &str = "!reload";
+const LOAD: &str = "!load";
 
 // Below requires thorough checks or otherwise infinite money
 // const SELL_REWARD: &str = "!sell";
@@ -57,32 +58,25 @@ async fn load_objects(map: &mut HashMap<u64, u64>, ctx: Context, channel_id: u64
     }
 }
 
-// Returns message ID of message sent if successful
-async fn send_message(text: &String, ctx: Context, channel_id: ChannelId) -> Result<u64, ()>
+async fn load_users(users: &mut HashMap<u64, u64>, user_posts: &mut HashMap<u64, u64>, ctx: Context)
 {
-    let message_result = channel_id.say(&ctx.http, text).await;
-    
-    match message_result
-    {
-        Ok(message) => return Ok(message.id.0),
-        Err(error) => return Err(()) 
-    }
+
 }
 
-// Create a message for a user upon their first reaction
-async fn save_user(user_id: u64, starting_points: u64, ctx: Context, users: &mut HashMap<u64, u64>, user_posts: &mut HashMap<u64, u64>)
+async fn save_user(user_id: u64, points: u64, ctx: Context, users: &mut HashMap<u64, u64>, user_posts: &mut HashMap<u64, u64>)
 {
-    let text = format!("{} {}", user_id, starting_points);
+    let text = format!("{} {}", user_id, points);
     let channel_id = ChannelId(USERS_CHANNEL);
     let message_id = send_message(&text, ctx, channel_id)
         .await.expect("Unable to send message"); 
+    let user_post_id = message_id;
 
-    users.insert(user_id, starting_points);
-    user_posts.insert(user_id, message_id);
+    users.insert(user_id, points);
+    user_posts.insert(user_id, user_post_id); 
 }
 
 // Edit user channel messages
-async fn update_user(user_id: u64, message_id: u64,  points: u64, ctx: Context, users: &mut HashMap<u64, u64>)
+async fn update_user(message_id: u64,  points: u64, ctx: Context)
 {
     let channel_id = ChannelId(USERS_CHANNEL);
 
@@ -92,7 +86,7 @@ async fn update_user(user_id: u64, message_id: u64,  points: u64, ctx: Context, 
         println!("{:?}", why);
     }
     
-    *users.get_mut(&user_id).expect("User does not exist") = points;
+    // Update user map during reaction response
 }
 
 // HashMap must be in Arcs to be allocated on the heap
@@ -118,6 +112,18 @@ async fn send_private(text: &String, ctx: Context, user_id: UserId)
     }
 }
 
+// Returns message ID of message sent if successful
+async fn send_message(text: &String, ctx: Context, channel_id: ChannelId) -> Result<u64, ()>
+{
+    let message_result = channel_id.say(&ctx.http, text).await;
+    
+    match message_result
+    {
+        Ok(message) => return Ok(message.id.0),
+        Err(error) => return Err(()) 
+    }
+}
+
 #[async_trait]
 impl EventHandler for Handler
 {
@@ -136,18 +142,29 @@ impl EventHandler for Handler
         {
             HELP =>
             {
-                send_message(&HELP_MESSAGE.to_owned(), ctx, msg.channel_id).await; 
+                send_message(&HELP_MESSAGE.to_owned(), ctx.clone(), msg.channel_id).await; 
             },
             CHECK_BALANCE =>
             {
-                let points = Arc::clone(&self.users).lock().unwrap()
+                let points = Arc::clone(&self.users).lock().await
                     [&msg.author.id.0].to_string();
                 let message_to_send = format!("{}{}{}", "You have ", points, " LP");
-                send_message(&message_to_send, ctx, msg.channel_id).await;
+                send_private(&message_to_send, ctx.clone(), msg.author.id).await;
             },
-            RELOAD =>
+            LOAD =>
             {
-                // Load objects x3
+                let tasks_alloc = Arc::clone(&self.tasks); 
+                let users_alloc = Arc::clone(&self.users);
+                let user_posts_alloc = Arc::clone(&self.user_posts);
+                let rewards_alloc = Arc::clone(&self.rewards);
+                let mut tasks = tasks_alloc.lock().await;
+                let mut users = users_alloc.lock().await;
+                let mut user_posts = user_posts_alloc.lock().await;
+                let mut rewards = rewards_alloc.lock().await;
+
+                load_objects(&mut tasks, ctx.clone(), TASKS_CHANNEL).await;
+                load_objects(&mut users, ctx.clone(), USERS_CHANNEL).await;
+                load_objects(&mut rewards, ctx.clone(), REWARDS_CHANNEL).await;
             }
             &_ =>
             {
@@ -162,115 +179,102 @@ impl EventHandler for Handler
         {
             if reaction.channel_id == TASKS_CHANNEL
             {
-                let points;
+                let tasks_alloc = Arc::clone(&self.tasks); 
+                let users_alloc = Arc::clone(&self.users);
+                let user_posts_alloc = Arc::clone(&self.user_posts);
+                let tasks = tasks_alloc.lock().await;
+                let mut users = users_alloc.lock().await;
+                let mut user_posts = user_posts_alloc.lock().await;
+                let user_id = reaction.user_id.unwrap().0;
+                let message_id = reaction.message_id.as_u64();
+                let user_exists = users.contains_key(&user_id);
 
-                {
-                    let tasks_alloc = Arc::clone(&self.tasks); 
-                    let users_alloc = Arc::clone(&self.users);
-                    let user_posts_alloc = Arc::clone(&self.user_posts);
-                    let tasks = tasks_alloc.lock().unwrap();
-                    let mut users = users_alloc.lock().unwrap();
-                    let user_posts = user_posts_alloc.lock().unwrap();
-                    let user_id = reaction.user_id.unwrap().0;
-                    let message_id = reaction.message_id.as_u64();
-                    let user_exists = users.contains_key(&user_id);
+                let points_entry = users.entry(user_id)
+                    .or_insert(0); 
 
-                    let points_entry = users.entry(user_id)
-                        .or_insert(0); 
-
-                    let amount: u64 = 
-                        if tasks.contains_key(message_id)
-                        {
-                            *tasks.get(message_id).unwrap()
-                        }
-                        else
-                        {
-                            0
-                        };
-
-                    *points_entry += amount as u64;
-                    points = *points_entry;
-
-                    if user_exists
+                let amount: u64 = 
+                    if tasks.contains_key(message_id)
                     {
-                        *users.get_mut(&user_id).unwrap() = points;
-                        let user_post_id = user_posts.get(user_id);
-                        update_user(user_id, user_post_id, points, ctx, &mut users)
-                            .await
-                            .expect("Failed to update user file");
+                        *tasks.get(message_id).unwrap()
                     }
                     else
                     {
-                        users.insert(user_id, points);
-                        let user_post_id = save_user(user_id, points, ctx, &mut users, &mut user_posts)
-                            .await?
-                            .expect("Failed to create user file");
-                    }
+                        0
+                    };
+
+                *points_entry += amount;
+                let points = *points_entry;
+
+                let user_post_id = user_posts.get_mut(&user_id)
+                    .expect("Unable to find user's post");
+
+                if user_exists
+                {
+                    update_user(*user_post_id, points, ctx.clone())
+                        .await;
                 }
+                else
+                {
+                    save_user(user_id, points, ctx.clone(), &mut users, &mut user_posts)
+                        .await;
+                }
+
+                let message_to_send = format!("Task complete! You now have a total of {} LP", points); 
+                send_private(&message_to_send, ctx.clone(), reaction.user_id.unwrap()).await;
 
                 // Make sure bot has "MANAGE_MESSAGES" permission
                 if let Err(why) = reaction.delete(&ctx.http).await
                 {
                     println!("Error deleting recent task reaction {:?}", why);
                 }
-
-                let message_to_send = format!("Task complete! You now have a total of {} LP", points); 
-                send_private(&message_to_send, ctx, reaction.user_id.unwrap()).await;
             }
             else if reaction.channel_id == REWARDS_CHANNEL
             {
-                let mut fail = false;
-                let mut points: u64 = 0;
+                let rewards_alloc = Arc::clone(&self.rewards); 
+                let users_alloc = Arc::clone(&self.users);
+                let user_posts_alloc = Arc::clone(&self.user_posts);
+                let rewards = rewards_alloc.lock().await;
+                let mut users = users_alloc.lock().await;
+                let user_posts = user_posts_alloc.lock().await;
+                let user_id = reaction.user_id.unwrap().0;
+                let message_id = reaction.message_id.as_u64();
 
+                let points_entry = users.entry(user_id)
+                    .or_insert(0); 
+
+                // if user does not exist or has 0 points, quit early
+                if rewards.contains_key(message_id)
                 {
-                    let rewards_alloc = Arc::clone(&self.rewards); 
-                    let users_alloc = Arc::clone(&self.users);
-                    let rewards = rewards_alloc.lock().unwrap();
-                    let mut users = users_alloc.lock().unwrap();
-                    let user_id = reaction.user_id.unwrap().0;
-                    let message_id = reaction.message_id.as_u64();
+                    let cost = *rewards.get(message_id).unwrap() as u64;
 
-                    let points_entry = users.entry(user_id)
-                        .or_insert(0); 
-
-                    if rewards.contains_key(message_id)
+                    if *points_entry >= cost
                     {
-                        let cost = *rewards.get(message_id).unwrap() as u64;
+                        *points_entry -= cost;
+                        let points = *points_entry;
+                        *users.get_mut(&user_id).expect("User does not exist") = points;
 
-                        if *points_entry >= cost
-                        {
-                            *points_entry -= cost;
-                            points = *points_entry;
-                            update_user(user_id, points).expect("Failed to update user");
-                        }
-                        else
-                        {
-                            fail = true;
-                        }
+                        let user_post_id = *user_posts.get(&user_id)
+                            .expect("Unable to find user post");
+                        update_user(user_post_id, points, ctx.clone()).await;
+                        let message_to_send = format!(
+                            "Reward purchased! Remove your reaction oonce you have used this reward. Your balance is now {} LP",
+                            points);
+                        send_private(&message_to_send, 
+                            ctx.clone(), reaction.user_id.unwrap()).await;
                     }
                     else
                     {
-                        println!("Reaction sent from invalid message in rewards channel");
-                    }
-                }
-                
-                if fail
-                {
-                    let _ctx = ctx.clone();
-                    send_message(&"Insufficient points to purchase this reward".to_owned(), _ctx, reaction.user_id.unwrap()).await;
+                        send_private(&"Insufficient points to purchase this reward".to_owned(), ctx.clone(), reaction.user_id.unwrap()).await;
 
-                    if let Err(why) = reaction.delete(&ctx.http).await
-                    {
-                        println!("Error deleting recent reward reaction {:?}", why);
+                        if let Err(why) = reaction.delete(&ctx.http).await
+                        {
+                            println!("Error deleting recent reward reaction {:?}", why);
+                        }
                     }
                 }
                 else
                 {
-                    let message_to_send = format!(
-                        "Reward purchased! Remove your reaction oonce you have used this reward. Your balance is now {} LP",
-                        points);
-                    send_message(&message_to_send, 
-                        ctx, reaction.user_id.unwrap()).await;
+                    println!("Reaction sent from invalid message in rewards channel");
                 }
             }
         }
@@ -280,12 +284,10 @@ impl EventHandler for Handler
 #[tokio::main]
 async fn main() 
 {
-    let mut tasks: HashMap<u64, u16> = HashMap::new();
+    let mut tasks: HashMap<u64, u64> = HashMap::new();
     let mut users: HashMap<u64, u64> = HashMap::new();
-    let mut rewards: HashMap<u64, u16> = HashMap::new();
-    load_tasks(&mut tasks).expect("Could not load tasks");
-    load_users(&mut users).expect("Could not load users");
-    load_rewards(&mut rewards).expect("Could not load rewards");
+    let mut user_posts: HashMap<u64, u64> = HashMap::new();
+    let mut rewards: HashMap<u64, u64> = HashMap::new();
 
     let token = env::var("TOKEN")
         .expect("Expected a token in the environment");
@@ -299,6 +301,7 @@ async fn main()
     {
         tasks: Arc::new(Mutex::new(tasks)),
         users: Arc::new(Mutex::new(users)),
+        user_posts: Arc::new(Mutex::new(user_posts)),
         rewards: Arc::new(Mutex::new(rewards))
     };
     let mut client = Client::builder(&token, intents)
