@@ -1,4 +1,3 @@
-use std::env;
 use std::sync::{Arc, Mutex};
 use std::fs::{self, File};
 use std::io::{self, BufReader, Error, ErrorKind};
@@ -11,13 +10,20 @@ use serenity::
     prelude::*,
     Client
 };
+use aes_gcm::
+{
+    aead::{Aead, AeadCore, KeyInit, OsRng},
+    Aes256Gcm, Nonce, Key
+};
 use serde::{Serialize, Deserialize};
+use shuttle_secrets::SecretStore;
+use shuttle_persist::PersistInstance;
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Task
 {
     pub message_id: u64, // The message to react to to gain points
-    pub value: u16 // How many points the task is worth
+    pub value: u64 // How many points the task is worth
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -31,16 +37,12 @@ struct User
 struct Reward
 {
     pub message_id: u64, // The message to react to buy this reward
-    pub cost: u16 // How many points the reward costs
+    pub cost: u64 // How many points the reward costs
 }
 
 const TASKS_FOLDER: &str = "/home/alegottu/Projects/Rust/discord-luh-bot/res/tasks";
 const USERS_FOLDER: &str = "/home/alegottu/Projects/Rust/discord-luh-bot/res/users";
 const REWARDS_FOLDER: &str = "/home/alegottu/Projects/Rust/discord-luh-bot/res/rewards";
-
-const TASKS_CHANNEL: u64 = 1131139960129474602;
-const REWARDS_CHANNEL: u64 = 1131139932040200343;
-const BOT_ID: u64 = 1131137661998993420;
 
 const HELP: &str = "!help";
 const ADD_TASK: &str = "!add task";
@@ -54,7 +56,13 @@ const CHECK_BALANCE: &str = "!balance";
 
 const HELP_MESSAGE: &str = "!add task <task_message_id> <point_value> adds a task\n!add reward <reward_message_id> <cost> adds a reward\n!balance checks your point balance";
 
-fn load_tasks(tasks: &mut HashMap<u64, u16>) -> io::Result<()>
+fn decrypt()
+{
+
+}
+
+// try to consolidate various load/store methods into one common algo
+fn load_tasks(tasks: &mut HashMap<u64, u64>) -> io::Result<()>
 {
     for entry in fs::read_dir(TASKS_FOLDER)?
     {
@@ -82,7 +90,7 @@ fn load_users(users: &mut HashMap<u64, u64>) -> io::Result<()>
     Ok(())
 }
 
-fn load_rewards(rewards: &mut HashMap<u64, u16>) -> io::Result<()>
+fn load_rewards(rewards: &mut HashMap<u64, u64>) -> io::Result<()>
 {
     for entry in fs::read_dir(REWARDS_FOLDER)?
     {
@@ -94,6 +102,11 @@ fn load_rewards(rewards: &mut HashMap<u64, u16>) -> io::Result<()>
     }
 
     Ok(())
+
+}
+
+fn encrypt()
+{
 
 }
 
@@ -155,9 +168,13 @@ fn save_reward(reward: Reward, reward_num: usize) -> io::Result<()>
 // HashMap must be in Arcs to be allocated on the heap
 struct Handler
 {
-    tasks: Arc<Mutex<HashMap<u64, u16>>>,
+    tasks: Arc<Mutex<HashMap<u64, u64>>>,
     users: Arc<Mutex<HashMap<u64, u64>>>,
-    rewards: Arc<Mutex<HashMap<u64, u16>>>
+    rewards: Arc<Mutex<HashMap<u64, u64>>>,
+    key: Key<Aes256Gcm>, // symmetric key for decrypt and encrypt
+    bot_id: u64,
+    tasks_channel: u64,
+    rewards_channel: u64
 }
 
 async fn send_message(text: &String, ctx: Context, user_id: UserId)
@@ -184,7 +201,7 @@ impl EventHandler for Handler
 
     async fn message(&self, ctx: Context, msg: Message)
     {
-        if msg.author.id.0 == BOT_ID { return; } 
+        if msg.author.id.0 == self.bot_id { return; } 
 
         let message = msg.content.as_str();
         
@@ -210,9 +227,9 @@ impl EventHandler for Handler
                     command_split.nth(1);
                     let message_id: u64 = command_split.next().expect("Task message ID not provided")
                         .parse().expect("Invalid argument type provided for message ID");
-                    let value: u16 = command_split.next().expect("Task point value not provided")
+                    let value: u64 = command_split.next().expect("Task point value not provided")
                         .parse().expect("Invalid arugment type provided for point value");
-                    let task = Task { message_id: message_id, value: value }; 
+                    let task = Task { message_id, value }; 
 
                     let tasks_alloc = Arc::clone(&self.tasks);
                     let mut tasks = tasks_alloc.lock().unwrap(); 
@@ -226,9 +243,9 @@ impl EventHandler for Handler
                     command_split.nth(1);
                     let message_id: u64 = command_split.next().expect("Reward message ID not provided")
                         .parse().expect("Invalid argument type provided for message ID");
-                    let cost: u16 = command_split.next().expect("Reward cost not provided")
+                    let cost: u64 = command_split.next().expect("Reward cost not provided")
                         .parse().expect("Invalid arugment type provided for cost");
-                    let reward = Reward { message_id: message_id, cost: cost };
+                    let reward = Reward { message_id, cost };
 
                     let rewards_alloc = Arc::clone(&self.rewards);
                     let mut rewards = rewards_alloc.lock().unwrap(); 
@@ -247,7 +264,7 @@ impl EventHandler for Handler
     {
         if reaction.user_id.is_some()
         {
-            if reaction.channel_id == TASKS_CHANNEL
+            if reaction.channel_id == self.tasks_channel
             {
                 let points;
 
@@ -263,7 +280,7 @@ impl EventHandler for Handler
                     let points_entry = users.entry(user_id)
                         .or_insert(0); 
 
-                    let amount: u16 = 
+                    let amount: u64 = 
                         if tasks.contains_key(message_id)
                         {
                             *tasks.get(message_id).unwrap()
@@ -284,7 +301,7 @@ impl EventHandler for Handler
                     }
                     else
                     {
-                        let user = User { id: user_id, points: points };
+                        let user = User { id: user_id, points };
                         users.insert(user_id, points);
                         save_user(user, users.len() - 1)
                             .expect("Failed to create user file");
@@ -300,7 +317,7 @@ impl EventHandler for Handler
                 let message_to_send = format!("Task complete! You now have a total of {} LP", points); 
                 send_message(&message_to_send, ctx, reaction.user_id.unwrap()).await;
             }
-            else if reaction.channel_id == REWARDS_CHANNEL
+            else if reaction.channel_id == self.rewards_channel
             {
                 let mut fail = false;
                 let mut points: u64 = 0;
@@ -360,18 +377,32 @@ impl EventHandler for Handler
     }
 }
 
-#[tokio::main]
-async fn main() 
+#[shuttle_runtime::main]
+async fn main(
+    #[shuttle_secrets::Secrets] secrets: SecretStore
+    ) -> shuttle_serenity::ShuttleSerenity 
 {
-    let mut tasks: HashMap<u64, u16> = HashMap::new();
+    let mut tasks: HashMap<u64, u64> = HashMap::new();
     let mut users: HashMap<u64, u64> = HashMap::new();
-    let mut rewards: HashMap<u64, u16> = HashMap::new();
+    let mut rewards: HashMap<u64, u64> = HashMap::new();
     load_tasks(&mut tasks).expect("Could not load tasks");
     load_users(&mut users).expect("Could not load users");
     load_rewards(&mut rewards).expect("Could not load rewards");
 
-    let token = env::var("TOKEN")
-        .expect("Expected a token in the environment");
+    let token = secrets.get("TOKEN")
+        .expect("Discord token was not found");
+    let key: &[u8] = secrets.get("PRIVATE_KEY")
+        .expect("Private key was not found").as_bytes();
+    let key: &Key<Aes256Gcm> = key.into();
+    let bot_id: u64 = secrets.get("BOT_ID")
+        .expect("Bot ID was not found")
+        .parse().unwrap();
+    let tasks_channel: u64 = secrets.get("TASKS_CHANNEL")
+        .expect("Task channel ID was not found")
+        .parse().unwrap();
+    let rewards_channel: u64 = secrets.get("REWARDS_CHANNEL")
+        .expect("Rewards channel ID was not found")
+        .parse().unwrap();
 
     // Sets what bot is notified about
     let intents = GatewayIntents::MESSAGE_CONTENT
@@ -382,14 +413,15 @@ async fn main()
     {
         tasks: Arc::new(Mutex::new(tasks)),
         users: Arc::new(Mutex::new(users)),
-        rewards: Arc::new(Mutex::new(rewards))
+        rewards: Arc::new(Mutex::new(rewards)),
+        key,
+        bot_id,
+        tasks_channel,
+        rewards_channel
     };
-    let mut client = Client::builder(&token, intents)
+    let client = Client::builder(&token, intents)
         .event_handler(handler).await.expect("Error creating client");
 
-    if let Err(why) = client.start().await
-    {
-        println!("Error with client: {:?}", why);
-    }
+    Ok(client.into())
 }
 
