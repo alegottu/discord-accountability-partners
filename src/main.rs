@@ -17,7 +17,6 @@ use aes_gcm::
 };
 use serde::{Serialize, Deserialize};
 use shuttle_secrets::SecretStore;
-use shuttle_persist::PersistInstance;
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Task
@@ -40,10 +39,6 @@ struct Reward
     pub cost: u64 // How many points the reward costs
 }
 
-const TASKS_FOLDER: &str = "/home/alegottu/Projects/Rust/discord-luh-bot/res/tasks";
-const USERS_FOLDER: &str = "/home/alegottu/Projects/Rust/discord-luh-bot/res/users";
-const REWARDS_FOLDER: &str = "/home/alegottu/Projects/Rust/discord-luh-bot/res/rewards";
-
 const HELP: &str = "!help";
 const ADD_TASK: &str = "!add task";
 // const DELETE_TASK: &str = "!delete task";
@@ -56,19 +51,30 @@ const CHECK_BALANCE: &str = "!balance";
 
 const HELP_MESSAGE: &str = "!add task <task_message_id> <point_value> adds a task\n!add reward <reward_message_id> <cost> adds a reward\n!balance checks your point balance";
 
-fn decrypt()
+// TODO: use with serenity CreateAttachment
+fn decrypt(path: &str, key: &[u8; 32], result: &mut Vec<u8>) -> io::Result<()>
 {
+    let key: &Key<Aes256Gcm> = key.into();
+    let cipher = Aes256Gcm::new(&key);
+    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+    let text = fs::read(path).expect("Could not open file");
 
+    // vector should be empty already
+    result.extend(cipher.decrypt(&nonce, text.as_ref())
+        .expect("Could not decrypt file"));
+
+    Ok(())
 }
 
+// TODO: go back to storing within messages as makeshift database if hosting via shuttle
 // try to consolidate various load/store methods into one common algo
-fn load_tasks(tasks: &mut HashMap<u64, u64>) -> io::Result<()>
+fn load_tasks(tasks: &mut Hashmap<u64, u64>) -> io::Result<()>
 {
-    for entry in fs::read_dir(TASKS_FOLDER)?
+    for entry in fs::read_dir(tasks_folder)?
     {
         let entry = entry?;
-        let file = File::open(entry.path())?; // Forward error if unable to open file
-        let reader = BufReader::new(file);
+        let file = file::open(entry.path())?; // forward error if unable to open file
+        let reader = bufreader::new(file);
         let task: Task = serde_json::from_reader(reader)?;
         tasks.insert(task.message_id, task.value);
     }
@@ -102,12 +108,19 @@ fn load_rewards(rewards: &mut HashMap<u64, u64>) -> io::Result<()>
     }
 
     Ok(())
-
 }
 
-fn encrypt()
+fn encrypt(path: &str, dest: &str, key: &[u8; 32]) -> io::Result<()>
 {
+    let key: &Key<Aes256Gcm> = key.into();
+    let cipher = Aes256Gcm::new(&key);
+    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+    let text = fs::read(path).expect("Could not open file");
 
+    let encrypted_data = cipher.encrypt(&nonce, text.as_ref())
+        .expect("Could not encrypt file");
+
+    fs::write(dest, encrypted_data)
 }
 
 // Functions to save JSON files
@@ -171,7 +184,7 @@ struct Handler
     tasks: Arc<Mutex<HashMap<u64, u64>>>,
     users: Arc<Mutex<HashMap<u64, u64>>>,
     rewards: Arc<Mutex<HashMap<u64, u64>>>,
-    key: Key<Aes256Gcm>, // symmetric key for decrypt and encrypt
+    key: String // symmetric key for decrypt and encrypt
     bot_id: u64,
     tasks_channel: u64,
     rewards_channel: u64
@@ -391,9 +404,9 @@ async fn main(
 
     let token = secrets.get("TOKEN")
         .expect("Discord token was not found");
-    let key: &[u8] = secrets.get("PRIVATE_KEY")
-        .expect("Private key was not found").as_bytes();
-    let key: &Key<Aes256Gcm> = key.into();
+    // key is 32 bytes
+    let key: String = secrets.get("PRIVATE_KEY")
+        .expect("Private key was not found");
     let bot_id: u64 = secrets.get("BOT_ID")
         .expect("Bot ID was not found")
         .parse().unwrap();
