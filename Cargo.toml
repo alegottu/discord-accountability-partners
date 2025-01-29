@@ -7,5 +7,7 @@ edition = "2021"
 
 [dependencies]
 tokio = { version = "1.28.2", features = ["full"] }
-serenity = { version = "0.11", default-features = false, features = ["client", "gateway", "model", "rustls_backend"] }
+serenity = { version = "0.11", default-features = false, features = ["client", "builder", "gateway", "model", "rustls_backend"] }
 async-std = { version = "1.12.0", features = ["std"] }
+once_cell = { version = "1.13.0" }
+securestore = "0.100.0"
