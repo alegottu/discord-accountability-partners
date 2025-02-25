@@ -14,5 +14,6 @@ For each task you want to track, the format is:
 `Task Description - X` where 'X' is the amount of points someone will recieve for completeing this task.
 For each reward you want to track, the format is:
 `Reward Description - X` where 'X' is the amount of points required to obtain this reward.
+Once you have all of this set up, just run the build and run the bot using Rust! The bot takes up very little resources so I've found no problems just keeping it running or starting it up and leaving it in the background when I begin my day, but you of course could also host it with a cloud service permanently.
 
 Currently this bot is very bare bones, but I'll plan on adding more features to track user stats besides point totals. Please let me know if you enjoy the bot or have any requests!
