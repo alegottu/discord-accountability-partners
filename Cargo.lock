@@ -290,7 +290,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "discord-luh-bot"
+name = "discord-accountability-bot"
 version = "0.1.0"
 dependencies = [
  "async-std",

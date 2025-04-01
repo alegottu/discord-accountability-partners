@@ -1,9 +1,10 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, process::exit};
 use std::sync::Arc;
 use async_std::sync::Mutex;
 use securestore::{KeySource, SecretsManager};
 use std::path::Path;
 use once_cell::sync::Lazy;
+use std::env;
 
 use serenity::
 {
@@ -26,7 +27,7 @@ const CHECK_BALANCE: &str = "!balance";
 // Below requires thorough checks or otherwise infinite money
 // const SELL_REWARD: &str = "!sell";
 
-const HELP_MESSAGE: &str = "!balance to check your current LP balance";
+const HELP_MESSAGE: &str = "!balance to check your current AP balance";
 
 // Expects users to write all objects in the correct format through their own messages
 async fn load_objects(map: &mut HashMap<u64, u64>, user_posts: &mut Option<&mut HashMap<u64, u64>>, ctx: Context, channel_id: u64) 
@@ -100,10 +101,12 @@ struct Handler
     tasks: Arc<Mutex<HashMap<u64, u64>>>,
     users: Arc<Mutex<HashMap<u64, u64>>>,
     user_posts: Arc<Mutex<HashMap<u64, u64>>>, // Maps each user to their coresponding tracking post
+    message: String, // Secret
     rewards_channel: u64,
     tasks_channel: u64,
     users_channel: u64,
-    bot_id: u64
+    bot_id: u64,
+    contact: u64
 }
 
 async fn send_private(text: &String, ctx: Context, user_id: UserId)
@@ -137,6 +140,11 @@ impl EventHandler for Handler
 {
     async fn ready(&self, ctx: Context, ready: Ready)
     {
+        if self.contact != 0
+        {
+            send_private(&self.message, ctx.clone(), UserId(self.contact)).await
+        }
+
         let tasks_alloc = Arc::clone(&self.tasks); 
         let users_alloc = Arc::clone(&self.users);
         let user_posts_alloc = Arc::clone(&self.user_posts);
@@ -169,7 +177,7 @@ impl EventHandler for Handler
             {
                 let points = Arc::clone(&self.users).lock().await
                     [&msg.author.id.0].to_string();
-                let message_to_send = format!("{}{}{}", "You have ", points, " LP");
+                let message_to_send = format!("{}{}{}", "You have ", points, " AP");
                 send_private(&message_to_send, ctx.clone(), msg.author.id).await;
             },
             &_ =>
@@ -212,7 +220,7 @@ impl EventHandler for Handler
                             .expect("Unable to find user post");
                         update_user(user_post_id, user_id, points, self.users_channel, ctx.clone()).await;
                         let message_to_send = format!(
-                            "Reward purchased! Remove your reaction once you have used this reward. Your balance is now {} LP",
+                            "Reward purchased! Remove your reaction once you have used this reward. Your balance is now {} AP",
                             points);
                         send_private(&message_to_send, 
                             ctx.clone(), reaction.user_id.unwrap()).await;
@@ -273,7 +281,7 @@ impl EventHandler for Handler
                         .await;
                 }
 
-                let message_to_send = format!("Task complete! You now have a total of {} LP", points); 
+                let message_to_send = format!("Task complete! You now have a total of {} AP", points); 
                 send_private(&message_to_send, ctx.clone(), reaction.user_id.unwrap()).await;
 
                 // Make sure bot has "MANAGE_MESSAGES" permission
@@ -289,17 +297,30 @@ impl EventHandler for Handler
 #[tokio::main]
 async fn main() 
 {
-    let tasks: HashMap<u64, u64> = HashMap::new();
-    let users: HashMap<u64, u64> = HashMap::new();
-    let user_posts: HashMap<u64, u64> = HashMap::new();
-    let rewards: HashMap<u64, u64> = HashMap::new();
-
     // might not need to include channel IDs in secret store
     let secrets: Lazy<SecretsManager> = Lazy::new(|| {
         let keyfile = Path::new("secure/secrets.key");
         SecretsManager::load("secure/secrets.json", KeySource::File(keyfile))
             .expect("Failed to load SecureStore vault!")
     });
+    let token = secrets.get("token").expect("Could not find secret 'token'");
+    let mut contact: u64 = 0;
+    let mut message = String::new();
+
+    // NOTE: For now handling the actual logic that would go here in a bash script
+    if env::args().count() > 0
+    {
+        contact = secrets.get("contact_id")
+            .expect("Could not find secret 'contact'")
+            .parse().expect("Contact was not a valid ID");
+        message = secrets.get("contact_message")
+            .expect("Could not find secret message");
+    }
+
+    let tasks: HashMap<u64, u64> = HashMap::new();
+    let users: HashMap<u64, u64> = HashMap::new();
+    let user_posts: HashMap<u64, u64> = HashMap::new();
+    let rewards: HashMap<u64, u64> = HashMap::new();
 
     let rewards_channel: u64 = secrets.get("rewards_channel").expect("Could not find secret 'rewards_channel'")
         .parse().unwrap();
@@ -309,7 +330,6 @@ async fn main()
         .parse().unwrap();
     let bot_id: u64 = secrets.get("bot_id").expect("Could not find secret 'bot_id'")
         .parse().unwrap();
-    let token = secrets.get("token").expect("Could not find secret 'token '");
 
     // Sets what bot is notified about
     let intents = GatewayIntents::MESSAGE_CONTENT
@@ -322,10 +342,12 @@ async fn main()
         tasks: Arc::new(Mutex::new(tasks)),
         users: Arc::new(Mutex::new(users)),
         user_posts: Arc::new(Mutex::new(user_posts)),
+        message,
         rewards_channel,
         tasks_channel,
         users_channel,
-        bot_id
+        bot_id,
+        contact
     };
     let mut client = Client::builder(&token, intents)
         .event_handler(handler).await.expect("Error creating client");
