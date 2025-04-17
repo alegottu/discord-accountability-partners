@@ -15,6 +15,7 @@ use serenity::
         channel::Message,
         gateway::Ready
     },
+    builder::EditMessage,
     prelude::*,
     futures::StreamExt,
     Client
@@ -31,7 +32,7 @@ const HELP_MESSAGE: &str = "!balance to check your current AP balance";
 // Expects users to write all objects in the correct format through their own messages
 async fn load_objects(map: &mut HashMap<u64, u64>, user_posts: &mut Option<&mut HashMap<u64, u64>>, ctx: Context, channel_id: u64) 
 {
-    let channel_id = ChannelId(channel_id);
+    let channel_id = ChannelId::new(channel_id);
     let mut messages = channel_id.messages_iter(&ctx).boxed(); 
 
     while let Some(message_result) = messages.next().await 
@@ -51,11 +52,11 @@ async fn load_objects(map: &mut HashMap<u64, u64>, user_posts: &mut Option<&mut 
                     let user_id: u64 = wild.expect("Not enough arguments in message")
                         .parse().expect("Invalid type given for point argument");
                     map.insert(user_id, point_arg);
-                    user_posts.as_mut().unwrap().insert(user_id, message.id.0);
+                    user_posts.as_mut().unwrap().insert(user_id, message.id.get());
                 }
                 else
                 {
-                    map.insert(message.id.0, point_arg);
+                    map.insert(message.id.get(), point_arg);
                 }
             },
             Err(error) => 
@@ -69,7 +70,7 @@ async fn load_objects(map: &mut HashMap<u64, u64>, user_posts: &mut Option<&mut 
 async fn create_user(user_id: u64, points: u64, channel: u64, ctx: Context, users: &mut HashMap<u64, u64>, user_posts: &mut HashMap<u64, u64>)
 {
     let text = format!("{} - {}", user_id, points);
-    let channel_id = ChannelId(channel);
+    let channel_id = ChannelId::new(channel);
     let message_id = send_message(&text, ctx, channel_id)
         .await.expect("Unable to send message"); 
     let user_post_id = message_id;
@@ -81,11 +82,11 @@ async fn create_user(user_id: u64, points: u64, channel: u64, ctx: Context, user
 // Edit user channel messages
 async fn update_user(message_id: u64, user_id: u64, points: u64, channel: u64, ctx: Context)
 {
-    let channel_id = ChannelId(channel);
+    let channel_id = ChannelId::new(channel);
     let text = format!("{} - {}", user_id, points);
+    let builder = EditMessage::new().content(text);
 
-    if let Err(why) = channel_id.edit_message(&ctx.http, message_id,
-        |message| message.content(text)).await
+    if let Err(why) = channel_id.edit_message(&ctx.http, message_id, builder).await
     {
         println!("{:?}", why);
     }
@@ -129,7 +130,7 @@ async fn send_message(text: &String, ctx: Context, channel_id: ChannelId) -> Res
     
     match message_result
     {
-        Ok(message) => return Ok(message.id.0),
+        Ok(message) => return Ok(message.id.get()),
         Err(_error) => return Err(()) 
     }
 }
@@ -141,7 +142,7 @@ impl EventHandler for Handler
     {
         if self.contact != 0
         {
-            send_private(&self.message, ctx.clone(), UserId(self.contact)).await
+            send_private(&self.message, ctx.clone(), UserId::new(self.contact)).await
         }
 
         let tasks_alloc = Arc::clone(&self.tasks); 
@@ -162,7 +163,7 @@ impl EventHandler for Handler
 
     async fn message(&self, ctx: Context, msg: Message)
     {
-        if msg.author.id.0 == self.bot_id { return; } 
+        if msg.author.id.get() == self.bot_id { return; } 
 
         let message = msg.content.as_str();
         
@@ -175,7 +176,7 @@ impl EventHandler for Handler
             CHECK_BALANCE =>
             {
                 let points = Arc::clone(&self.users).lock().await
-                    [&msg.author.id.0].to_string();
+                    [&msg.author.id.get()].to_string();
                 let message_to_send = format!("{}{}{}", "You have ", points, " AP");
                 send_private(&message_to_send, ctx.clone(), msg.author.id).await;
             },
@@ -198,8 +199,8 @@ impl EventHandler for Handler
                 let rewards = rewards_alloc.lock().await;
                 let mut users = users_alloc.lock().await;
                 let user_posts = user_posts_alloc.lock().await;
-                let user_id = reaction.user_id.unwrap().0;
-                let message_id = reaction.message_id.as_u64();
+                let user_id = reaction.user_id.unwrap().get();
+                let message_id: &u64 = &reaction.message_id.get();
 
                 let points_entry = users.entry(user_id)
                     .or_insert(0); 
@@ -247,8 +248,8 @@ impl EventHandler for Handler
                 let tasks = tasks_alloc.lock().await;
                 let mut users = users_alloc.lock().await;
                 let mut user_posts = user_posts_alloc.lock().await;
-                let user_id = reaction.user_id.unwrap().0;
-                let message_id = reaction.message_id.as_u64();
+                let user_id = reaction.user_id.unwrap().get();
+                let message_id: &u64 = &reaction.message_id.get();
                 let user_exists = users.contains_key(&user_id);
 
                 let points_entry = users.entry(user_id)
