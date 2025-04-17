@@ -1,4 +1,4 @@
-use std::{collections::HashMap, process::exit};
+use std::collections::HashMap;
 use std::sync::Arc;
 use async_std::sync::Mutex;
 use securestore::{KeySource, SecretsManager};
@@ -9,7 +9,6 @@ use std::env;
 use serenity::
 {
     async_trait,
-    builder::EditMessage,
     model::
     {
         prelude::*, 
@@ -131,7 +130,7 @@ async fn send_message(text: &String, ctx: Context, channel_id: ChannelId) -> Res
     match message_result
     {
         Ok(message) => return Ok(message.id.0),
-        Err(error) => return Err(()) 
+        Err(_error) => return Err(()) 
     }
 }
 
@@ -171,7 +170,7 @@ impl EventHandler for Handler
         {
             HELP =>
             {
-                send_message(&HELP_MESSAGE.to_owned(), ctx.clone(), msg.channel_id).await; 
+                let _ = send_message(&HELP_MESSAGE.to_owned(), ctx.clone(), msg.channel_id).await; 
             },
             CHECK_BALANCE =>
             {
