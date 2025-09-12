@@ -106,7 +106,8 @@ struct Handler
     tasks_channel: u64,
     users_channel: u64,
     bot_id: u64,
-    contact: u64
+    contact_id: u64,
+    self_id: u64
 }
 
 async fn send_private(text: &String, ctx: Context, user_id: UserId)
@@ -140,9 +141,10 @@ impl EventHandler for Handler
 {
     async fn ready(&self, ctx: Context, ready: Ready)
     {
-        if self.contact != 0
+        if self.contact_id != 0
         {
-            send_private(&self.message, ctx.clone(), UserId::new(self.contact)).await
+            send_private(&self.message, ctx.clone(), UserId::new(self.contact_id)).await;
+            send_private(&self.message, ctx.clone(), UserId::new(self.self_id)).await;
         }
 
         let tasks_alloc = Arc::clone(&self.tasks); 
@@ -304,15 +306,19 @@ async fn main()
             .expect("Failed to load SecureStore vault!")
     });
     let token = secrets.get("token").expect("Could not find secret 'token'");
-    let mut contact: u64 = 0;
+    let mut contact_id: u64 = 0;
+    let mut self_id: u64 = 0;
     let mut message = String::new();
 
     // NOTE: For now handling the actual logic that would go here in a bash script
     if env::args().count() > 0
     {
-        contact = secrets.get("contact_id")
-            .expect("Could not find secret 'contact'")
+        contact_id = secrets.get("contact_id")
+            .expect("Could not find secret 'contact_id'")
             .parse().expect("Contact was not a valid ID");
+        self_id = secrets.get("self_id")
+            .expect("Could not find secret 'self_id'")
+            .parse().expect("Self was not a valid ID");
         message = secrets.get("contact_message")
             .expect("Could not find secret message");
     }
@@ -347,7 +353,8 @@ async fn main()
         tasks_channel,
         users_channel,
         bot_id,
-        contact
+        contact_id,
+        self_id
     };
     let mut client = Client::builder(&token, intents)
         .event_handler(handler).await.expect("Error creating client");
