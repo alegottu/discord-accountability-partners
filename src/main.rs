@@ -310,8 +310,8 @@ async fn main()
     let mut self_id: u64 = 0;
     let mut message = String::new();
 
-    // NOTE: For now handling the actual logic that would go here in a bash script
-    if env::args().count() > 0
+    // NOTE: For now handling the actual logic that would go here in a bash script, maybe add seperate branch for this
+    if env::args().count() > 1
     {
         contact_id = secrets.get("contact_id")
             .expect("Could not find secret 'contact_id'")
